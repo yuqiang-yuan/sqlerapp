@@ -1,0 +1,11 @@
+[package]
+name = "sqlerapp"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sqlerapp"
+path = "src/lib.rs"
+
+[dependencies]
+gpui-kit = "0.6.0"
