@@ -13,6 +13,11 @@ use gpui_kit::gpui::Action;
 #[action(namespace = sqlerapp)]
 pub struct Open;
 
+/// Create a new (untitled) document.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = sqlerapp)]
+pub struct New;
+
 /// Save a file.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = sqlerapp)]

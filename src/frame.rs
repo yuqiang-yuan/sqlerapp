@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
 use gpui_kit::base::StyledExt;
+use gpui_kit::component::button::{Button, ButtonVariants};
+use gpui_kit::component::label::Label;
 use gpui_kit::component::menu::AppMenuBar;
 use gpui_kit::component::TitleBar;
 use gpui_kit::prelude::FluentBuilder;
@@ -9,7 +11,7 @@ use gpui_kit::*;
 #[cfg(not(target_os = "macos"))]
 use gpui_kit::base::GlobalState;
 
-use crate::actions::{Open, Quit, Save};
+use crate::actions::{New, Open, Quit, Save};
 
 /// Application-wide state, so global action listeners (registered without a
 /// view in scope) can read/write the selected path — the same place the
@@ -24,6 +26,9 @@ impl Global for AppState {}
 pub struct FrameView {
     focus_handle: FocusHandle,
     menu_bar: Entity<AppMenuBar>,
+    /// The currently open document path. `None` means no document is open, in
+    /// which case the welcome screen is shown instead of the editor body.
+    path: Option<PathBuf>,
 }
 
 impl FrameView {
@@ -37,31 +42,15 @@ impl FrameView {
         Self {
             focus_handle,
             menu_bar,
+            path: None,
         }
     }
 
-    /// Define the top-level application menus and register the action handlers.
-    ///
-    /// On macOS the menus are handed to GPUI's native `App::set_menus`, which
-    /// populates the screen-top menu bar (`NSMainMenu`). On Windows/Linux the
-    /// app draws its own in-window menu bar via `GlobalState::set_app_menus`,
-    /// read by `AppMenuBar` in the `TitleBar`.
-    ///
-    /// The `Open`/`Save`/`Quit` handlers are registered as *global* action
-    /// listeners with `cx.on_action`. The macOS native menu bar validates each
-    /// item with `is_action_available`, which returns `true` when a matching
-    /// global listener exists — so the items stay enabled regardless of window
-    /// focus. (`cx.listener`, by contrast, only registers a handler on a view's
-    /// focus path, which the native-menu validation does not reliably hit.)
     fn set_menus(cx: &mut App) {
         register_actions(cx);
 
         #[cfg(target_os = "macos")]
         {
-            // The first menu is the macOS Application menu (bold, titled with the
-            // app name); AppKit treats whatever comes first as the App menu, so
-            // we give it the app name and the conventional app-level items.
-            // `File` follows as a normal menu.
             let app_menu = Menu::new("sqlerapp").items(vec![
                 MenuItem::os_submenu("Services", gpui::SystemMenuType::Services),
                 MenuItem::separator(),
@@ -85,6 +74,7 @@ impl FrameView {
     }
 
     fn on_open(_: &Open, cx: &mut App) {
+        println!("open action");
         cx.spawn(async move |cx| {
             // Your existing dialog logic — returns the chosen path.
             let path: PathBuf = open_file_dialog().await;
@@ -97,8 +87,14 @@ impl FrameView {
         .detach();
     }
 
+    /// `New` handler — creates a new untitled document. Logic TBD.
+    fn on_new(_: &New, _cx: &mut App) {
+        println!("new action");
+    }
+
     /// `Save` handler — reads state from the global app state.
     fn on_save(_: &Save, cx: &mut App) {
+        println!("menu save clicked");
         match &cx.global::<AppState>().selected_path {
             Some(path) => println!("Saving to {}", path.display()),
             None => println!("Nothing to save"),
@@ -110,16 +106,17 @@ impl FrameView {
     }
 }
 
-/// Register the app actions as global listeners, so the native menu bar
-/// validates them as available (and dispatches them) regardless of focus.
 fn register_actions(cx: &mut App) {
-    // Guard with a global flag so re-registering on multiple windows or
-    // re-renders does not stack duplicate listeners.
     if cx.has_global::<ListenerRegistered>() {
         return;
     }
     cx.set_global(ListenerRegistered);
+    if !cx.has_global::<AppState>() {
+        cx.set_global(AppState::default());
+    }
+
     cx.on_action(FrameView::on_open);
+    cx.on_action(FrameView::on_new);
     cx.on_action(FrameView::on_save);
     cx.on_action(FrameView::on_quit);
 }
@@ -129,21 +126,66 @@ struct ListenerRegistered;
 impl Global for ListenerRegistered {}
 
 impl Render for FrameView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        let has_document = self.path.is_some();
+
         div()
             .v_flex()
             .size_full()
-            // Keep the listener registration on the focus path too, so the
-            // in-window menu bar (Linux/Windows) and any focus-based dispatch
-            // still work alongside the global listeners.
-            .on_action(cx.listener(|_, _: &Open, _, cx| FrameView::on_open(&Open, cx)))
-            .on_action(cx.listener(|_, _: &Save, _, cx| FrameView::on_save(&Save, cx)))
             .child(
                 TitleBar::new().when(cfg!(not(target_os = "macos")), |title_bar| {
                     title_bar.child(self.menu_bar.clone())
                 }),
             )
+            .child(if has_document {
+                // Editor body — populated once document rendering is implemented.
+                div().size_full()
+            } else {
+                welcome_screen()
+            })
     }
+}
+
+/// The welcome screen shown when no document is open: a centered app title
+/// with New and Open buttons. Button logic is not wired up yet.
+fn welcome_screen() -> Div {
+    div()
+        .flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .v_flex()
+                .items_center()
+                .gap_4()
+                .child(
+                    Label::new("sqlerapp")
+                        .text_2xl()
+                        .font_weight(FontWeight::BOLD),
+                )
+                .child(
+                    div()
+                        .mt_4()
+                        .h_flex()
+                        .gap_3()
+                        .child(
+                            Button::new("welcome-new")
+                                .label("New")
+                                .primary()
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(New), cx)
+                                }),
+                        )
+                        .child(
+                            Button::new("welcome-open")
+                                .label("Open")
+                                .on_click(|_, window, cx| {
+                                    window.dispatch_action(Box::new(Open), cx)
+                                }),
+                        ),
+                ),
+        )
 }
 
 /// Placeholder for your existing file-open dialog.
