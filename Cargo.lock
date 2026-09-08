@@ -6438,6 +6438,9 @@ version = "0.1.0"
 dependencies = [
  "dirs 7.0.0",
  "gpui-kit",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
