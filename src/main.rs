@@ -1,9 +1,109 @@
+use std::path::PathBuf;
+
 use gpui_kit::assets::Assets;
+use gpui_kit::component::menu::*;
 use gpui_kit::component::*;
 use gpui_kit::*;
+use rust_embed::Embed;
 use sqlerapp::actions::{About, Open, Quit, Save};
 use sqlerapp::frame::FrameView;
-use sqlerapp::settings::AppSettings;
+
+pub struct MyApp {
+    menu_bar: Entity<AppMenuBar>,
+    current_file: Option<PathBuf>,
+}
+
+impl MyApp {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        // #[cfg(target_os = "macos")]
+        // {
+        //     cx.set_menus(build_menus());
+        // }
+
+        // #[cfg(not(target_os = "macos"))]
+        // {
+        //     let menus = build_menus()
+        //         .into_iter()
+        //         .map(|menu| menu.owned())
+        //         .collect();
+        //     GlobalState::global_mut(cx).set_app_menus(menus);
+        // }
+
+        let menus = build_menus()
+            .into_iter()
+            .map(|menu| menu.owned())
+            .collect();
+        GlobalState::global_mut(cx).set_app_menus(menus);
+
+        Self {
+            menu_bar: AppMenuBar::new(cx),
+            current_file: None,
+        }
+    }
+}
+
+impl Render for MyApp {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .id("main-window")
+            .size_full()
+            .v_flex()
+            .child(
+                TitleBar::new()
+                    .child(self.menu_bar.clone())
+            )
+    }
+}
+
+
+
+#[derive(Embed)]
+#[folder = "assets"]
+struct AppAssets;
+
+impl AssetSource for AppAssets {
+    fn load(&self, path: &str) -> Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        if let Some(file) = AppAssets::get(path) {
+            return Ok(Some(file.data));
+        }
+
+        gpui_kit::assets::Assets.load(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<SharedString>> {
+        let mut files = AppAssets::iter()
+            .filter(|f| f.starts_with(path))
+            .map(SharedString::from)
+            .collect::<Vec<_>>();
+        files.extend(gpui_kit::assets::Assets.list(path)?);
+        Ok(files)
+    }
+}
+
+fn build_menus() -> Vec<Menu> {
+    vec![
+        #[cfg(target_os = "macos")]
+        {
+            Menu {
+                name: "SQLER".into(),
+                items: vec![
+                    MenuItem::action("About", About),
+                    MenuItem::separator(),
+                    MenuItem::action("Quit", Quit),
+                ],
+                disabled: false,
+            }
+        },
+        Menu {
+            name: "File".into(),
+            items: vec![
+                MenuItem::action("Open", Open),
+                MenuItem::action("Save", Save),
+            ],
+            disabled: false,
+        },
+    ]
+}
 
 fn open_main_window(window_bounds: Option<WindowBounds>, cx: &mut App) {
     // Fall back to a centered default when no geometry was saved.
@@ -19,14 +119,16 @@ fn open_main_window(window_bounds: Option<WindowBounds>, cx: &mut App) {
     };
 
     cx.open_window(options, |window, cx| {
-        let view = cx.new(|cx| FrameView::new(window, cx));
+        let view = cx.new(|cx| MyApp::new(window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     })
     .expect("Failed to open window");
+
+    cx.activate(true);
 }
 
 fn main() {
-    let app = gpui_kit::application().with_assets(Assets);
+    let app = gpui_kit::application().with_assets(AppAssets);
 
     app.run(move |cx| {
         gpui_kit::init(cx);
@@ -40,40 +142,5 @@ fn main() {
             });
         })
         .detach();
-
-        // let settings = AppSettings::load();
-
-        // // Apply the persisted theme before any window opens, so the first
-        // // frame is already in the right mode.
-        // Theme::change(settings.theme_mode, None, cx);
-
-        // // Restore the saved window geometry (if any) for the main window.
-        // let window_bounds = settings.window_bounds(cx);
-
-        // // Snapshot settings on quit. On `LastWindowClosed` platforms (all
-        // // non-macOS) the window is removed from `cx.windows()` *before*
-        // // `on_app_quit` fires, so read the geometry from the snapshot kept
-        // // fresh in `AppState` during render rather than the window list.
-        // // let quit_subscription = cx.on_app_quit(|cx| {
-        // //     let window_state = cx.global::<AppState>().last_window_state;
-        // //     let theme_mode = cx.theme().mode;
-
-        // //     async move {
-        // //         let mut settings = AppSettings::default();
-        // //         settings.window = window_state;
-        // //         settings.theme_mode = theme_mode;
-        // //         if let Err(err) = settings.save() {
-        // //             eprintln!("failed to save settings: {err}");
-        // //         }
-        // //     }
-        // // });
-        // // // The quit handler must stay registered for the app's lifetime;
-        // // // `on_app_quit` returns a `Subscription` that unregisters on drop.
-        // // std::mem::forget(quit_subscription);
-
-        // cx.spawn(async move |cx| {
-        //     cx.update(|cx| open_main_window(window_bounds, cx));
-        // })
-        // .detach();
     });
 }
