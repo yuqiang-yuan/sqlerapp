@@ -140,6 +140,7 @@ fn build_menus() -> Vec<Menu> {
         Menu {
             name: "File".into(),
             items: vec![
+                MenuItem::action("New", New),
                 MenuItem::action("Open", Open),
                 MenuItem::action("Save", Save),
             ],
