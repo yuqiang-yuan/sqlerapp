@@ -8,6 +8,11 @@
 
 use gpui_kit::gpui::Action;
 
+/// About.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = sqlerapp)]
+pub struct About;
+
 /// Open a file.
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = sqlerapp)]
