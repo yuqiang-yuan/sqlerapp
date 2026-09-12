@@ -15,25 +15,19 @@ pub struct MyApp {
 
 impl MyApp {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        // #[cfg(target_os = "macos")]
-        // {
-        //     cx.set_menus(build_menus());
-        // }
+        #[cfg(target_os = "macos")]
+        {
+            cx.set_menus(build_menus());
+        }
 
-        // #[cfg(not(target_os = "macos"))]
-        // {
-        //     let menus = build_menus()
-        //         .into_iter()
-        //         .map(|menu| menu.owned())
-        //         .collect();
-        //     GlobalState::global_mut(cx).set_app_menus(menus);
-        // }
-
-        let menus = build_menus()
-            .into_iter()
-            .map(|menu| menu.owned())
-            .collect();
-        GlobalState::global_mut(cx).set_app_menus(menus);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let menus = build_menus()
+                .into_iter()
+                .map(|menu| menu.owned())
+                .collect();
+            GlobalState::global_mut(cx).set_app_menus(menus);
+        }
 
         Self {
             menu_bar: AppMenuBar::new(cx),
