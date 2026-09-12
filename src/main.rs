@@ -1,14 +1,17 @@
 use std::path::PathBuf;
 
 use gpui_kit::assets::Assets;
+use gpui_kit::component::button::{Button, ButtonVariants};
 use gpui_kit::component::menu::*;
 use gpui_kit::component::*;
+use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
 use rust_embed::Embed;
-use sqlerapp::actions::{About, Open, Quit, Save};
+use sqlerapp::actions::{About, New, Open, Quit, Save};
 use sqlerapp::frame::FrameView;
 
 pub struct MyApp {
+    focus_handle: FocusHandle,
     menu_bar: Entity<AppMenuBar>,
     current_file: Option<PathBuf>,
 }
@@ -29,10 +32,18 @@ impl MyApp {
             GlobalState::global_mut(cx).set_app_menus(menus);
         }
 
+        let focus_handle = cx.focus_handle();
+        focus_handle.focus(window, cx);
+
         Self {
+            focus_handle,
             menu_bar: AppMenuBar::new(cx),
             current_file: None,
         }
+    }
+
+    pub fn on_new_action(&mut self, _: &New, window: &mut Window, cx: &mut Context<Self>) {
+        println!("new action executed");
     }
 }
 
@@ -40,16 +51,54 @@ impl Render for MyApp {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("main-window")
+            .track_focus(&self.focus_handle)
+            .on_action(cx.listener(Self::on_new_action))
             .size_full()
             .v_flex()
             .child(
                 TitleBar::new()
                     .child(self.menu_bar.clone())
             )
+            .when(self.current_file.is_none(), |div| div.child(welcome_screen()))
+            .when(self.current_file.is_some(), |div| div.child(main_view()))
     }
 }
 
+fn welcome_screen() -> impl IntoElement {
+    div()
+        .size_full()
+        .v_flex()
+        .items_center()
+        .justify_center()
+        .child(
+            div()
+                .text_lg()
+                .font_bold()
+                .child("Welcome to SQLER")
+        )
+        .child(
+            div()
+                .mt_8()
+                .h_flex()
+                .gap_4()
+                .child(
+                    Button::new("new")
+                        .primary()
+                        .label("New")
+                        .on_click(|_, window, cx| {
+                            window.dispatch_action(Box::new(New), cx);
+                        })
+                )
+                .child(
+                    Button::new("open").label("Open")
+                )
+        )
+}
 
+fn main_view() -> impl IntoElement {
+    div()
+        .size_full()
+}
 
 #[derive(Embed)]
 #[folder = "assets"]

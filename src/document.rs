@@ -18,7 +18,7 @@ use crate::model::{GraphLayout, Schema};
 
 /// An open ER document.
 #[derive(Clone, Debug)]
-pub struct Document {
+pub struct ErDocument {
     /// The document's dialect, fixed at creation and never switched.
     pub dialect: DialectName,
     /// The logical model — source of truth for the canvas.
@@ -32,7 +32,7 @@ pub struct Document {
     pub dirty: bool,
 }
 
-impl Document {
+impl ErDocument {
     /// Create a new untitled document for the given dialect.
     pub fn new(dialect: DialectName) -> Self {
         Self {
