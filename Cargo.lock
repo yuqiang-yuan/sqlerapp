@@ -6297,6 +6297,7 @@ dependencies = [
  "dirs 7.0.0",
  "gpui-kit",
  "rust-embed",
+ "schemars",
  "serde",
  "serde_json",
  "uuid",

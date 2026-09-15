@@ -14,15 +14,17 @@
 pub mod mysql;
 pub mod postgres;
 
+use gpui_kit::private::schemars::JsonSchema;
 pub use mysql::MySqlType;
 pub use postgres::PostgresType;
+use serde::{Deserialize, Serialize};
 
 /// The dialect a document is bound to, fixed at creation and never switched.
 ///
 /// This is the **name** of the dialect; `DialectType` carries the actual type
 /// enum for a column. One day each arm may dispatch to a `Dialect` impl that
 /// parses/emits DDL for that dialect.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum DialectName {
     MySql,
     Postgres,

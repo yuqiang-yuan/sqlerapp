@@ -6,7 +6,12 @@
 //! regardless of window focus, matching the pattern in GPUI's own `set_menus`
 //! example.
 
+
 use gpui_kit::gpui::Action;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::db::DialectName;
 
 /// About.
 #[derive(Action, Clone, PartialEq, Eq)]
@@ -22,6 +27,12 @@ pub struct Open;
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = sqlerapp)]
 pub struct New;
+
+#[derive(Action, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[action(namespace = sqlerapp)]
+pub struct NewDialogConfirmed {
+    pub dialect_name: DialectName,
+}
 
 /// Save a file.
 #[derive(Action, Clone, PartialEq, Eq)]
