@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use gpui_kit::{component::button::{Button, ButtonVariants}};
+use gpui_kit::component::{button::{Button, ButtonVariants}, dialog::DialogClose};
 use gpui_kit::component::dialog::{DialogAction, DialogFooter};
 use gpui_kit::component::list::{List, ListState};
 use gpui_kit::component::menu::*;
@@ -121,9 +121,11 @@ impl MyApp {
                     DialogFooter::new()
                         .child(DialogAction::new().child(Button::new("ok").primary().label("Ok")))
                         .child(
-                            Button::new("cancel")
-                                .label("Close")
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                            DialogClose::new().child(
+                                Button::new("cancel")
+                                    .label("Close")
+                                    .on_click(|_, window, cx| window.close_dialog(cx)),
+                            )
                         ),
                 )
                 .on_ok(move |_, window, app| {
@@ -195,9 +197,11 @@ impl MyApp {
                 )
                 .footer(
                     DialogFooter::new().child(
-                        Button::new("about-close")
-                            .label("Close")
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                        DialogClose::new().child(
+                            Button::new("about-close")
+                                .label("Close")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        ),
                     ),
                 )
         });
