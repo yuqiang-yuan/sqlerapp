@@ -4,7 +4,7 @@
 //! the canvas [`GraphLayout`], the on-disk [`path`](Document::path), and a
 //! [`dirty`](Document::dirty) flag. It replaces the loose `path` +
 //! `AppState.selected_path` pair that previously stood in for "the open
-//! document" on `FrameView`.
+//! document" on the old `FrameView` (now removed).
 //!
 //! - `path == None` means untitled / never saved (the welcome screen is shown
 //!   when there is *no* document at all, not when a document has no path).

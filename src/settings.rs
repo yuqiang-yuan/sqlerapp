@@ -25,6 +25,17 @@ pub struct AppSettings {
     /// The color theme mode.
     #[serde(default = "default_theme_mode")]
     pub theme_mode: ThemeMode,
+
+    /// The base font size, the UI's rem base. `None` leaves the theme default
+    /// (16px) in place; `Some` restores the user's chosen zoom level.
+    #[serde(default)]
+    pub font_size: Option<Pixels>,
+
+    /// Saved width of the editor's left (objects) panel, if the editor was
+    /// ever shown. Captured from `ResizableState::sizes()[0]` on close and
+    /// fed back as the panel's `initial_size` on the next launch.
+    #[serde(default)]
+    pub left_panel_width: Option<Pixels>,
 }
 
 impl Default for AppSettings {
@@ -32,6 +43,8 @@ impl Default for AppSettings {
         Self {
             window: None,
             theme_mode: default_theme_mode(),
+            font_size: None,
+            left_panel_width: None,
         }
     }
 }
@@ -146,10 +159,14 @@ mod tests {
                 maximized: true,
             }),
             theme_mode: ThemeMode::Dark,
+            font_size: Some(px(14.)),
+            left_panel_width: Some(px(220.)),
         };
         let json = serde_json::to_string(&settings).unwrap();
         let back: AppSettings = serde_json::from_str(&json).unwrap();
         assert_eq!(back.theme_mode, ThemeMode::Dark);
+        assert_eq!(back.font_size, Some(px(14.)));
+        assert_eq!(back.left_panel_width, Some(px(220.)));
         let window = back.window.expect("window should survive round trip");
         assert!(window.maximized);
         assert_eq!(window.size, Size::new(px(800.), px(600.)));

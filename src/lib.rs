@@ -1,6 +1,6 @@
 pub mod actions;
 pub mod db;
 pub mod document;
-pub mod frame;
+pub mod list_delegate;
 pub mod model;
 pub mod settings;
