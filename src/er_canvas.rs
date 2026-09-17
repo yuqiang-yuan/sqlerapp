@@ -9,8 +9,9 @@
 //! `canvas` + `paint_path` instead.
 //!
 //! State lives entirely on `ErDocument`'s `GraphLayout` (positions, pan
-//! offset, zoom scale), so the view holds only the in-progress drag gesture
-//! and everything else persists with the document. Coordinates:
+//! offset, zoom), so the view holds only the in-progress drag gesture, the
+//! current selection, and the canvas origin (for edge hit-testing), and
+//! everything else persists with the document. Coordinates:
 //!   `screen = logical * scale + offset`
 //! and dragging a table writes back `logical = (screen - offset) / scale`.
 
@@ -18,18 +19,19 @@ use std::collections::BTreeMap;
 
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::gpui::{
-    Canvas, Context, Entity, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    BoxShadow, Canvas, Context, Entity, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     PathBuilder, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Window, canvas,
-    div, point, px,
+    div, hsla, point, px,
 };
-use gpui_kit::base::StyledExt;
+use gpui_kit::base::{ElementExt, StyledExt};
+use gpui_kit::prelude::FluentBuilder;
 // Bring in the GPUI element traits (ParentElement, StatefulInteractiveElement,
 // Styled, etc.) the same way main.rs does via the glob.
 use gpui_kit::*;
 
 use crate::db::{DialectType, MySqlType, PostgresType};
 use crate::document::ErDocument;
-use crate::model::{Constraint, GraphLayout, TableId};
+use crate::model::{Constraint, ConstraintId, GraphLayout, Table, TableId};
 
 /// Fixed card geometry so the canvas-edge layer can estimate each card's
 /// bounds from `GraphLayout.positions` without measuring the DOM (the canvas
@@ -48,16 +50,64 @@ enum Drag {
     Table { id: TableId, last: Point<Pixels> },
 }
 
-/// The ER canvas view. Holds only the drag gesture — geometry and viewport
-/// live on the document's `GraphLayout`.
+/// What is currently selected on the canvas. Transient view state — not
+/// persisted with the document — so reloading a file starts with nothing
+/// selected. Single selection: clicking a card selects the table, clicking an
+/// edge selects the edge, clicking empty canvas clears it.
+#[derive(Clone, Debug, PartialEq)]
+enum Selection {
+    /// No selection.
+    None,
+    /// A table card.
+    Table(TableId),
+    /// A foreign-key edge (identified by its constraint id).
+    Edge(ConstraintId),
+}
+
+impl Default for Selection {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+/// The geometry of one foreign-key edge, in canvas-local screen coordinates
+/// (i.e. `to_screen` output — scaled + panned, but **before** the canvas
+/// element's own origin is added). Edge painting (adds the origin) and edge
+/// hit-testing (subtracts the origin from the click) share this, so the line
+/// you see is the line you can click.
+struct EdgeGeom {
+    id: ConstraintId,
+    from: TableId,
+    to: TableId,
+    start: Point<Pixels>,
+    end: Point<Pixels>,
+    cp_a: Point<Pixels>,
+    cp_b: Point<Pixels>,
+    /// Arrowhead direction along x: +1 points right (into a card on the
+    /// right), -1 points left.
+    tip_dir: f32,
+}
+
+/// The ER canvas view. Holds only the drag gesture and selection — geometry
+/// and viewport live on the document's `GraphLayout`.
 pub struct ErCanvas {
     doc: Entity<ErDocument>,
     drag: Option<Drag>,
+    selection: Selection,
+    /// The canvas element's window origin, captured each frame via
+    /// `on_prepaint`. Edge hit-testing subtracts this from the click position
+    /// to compare against canvas-local edge geometry.
+    canvas_origin: Point<Pixels>,
 }
 
 impl ErCanvas {
     pub fn new(doc: Entity<ErDocument>) -> Self {
-        Self { doc, drag: None }
+        Self {
+            doc,
+            drag: None,
+            selection: Selection::None,
+            canvas_origin: point(px(0.), px(0.)),
+        }
     }
 
     /// Card height for the given column count: header + one row per column.
@@ -75,7 +125,18 @@ impl ErCanvas {
 
     fn on_mouse_down(&mut self, ev: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         // A card's `on_mouse_down` stops propagation, so reaching here means
-        // the press landed on empty canvas → start a pan.
+        // the press landed on the canvas itself. First try to hit-test a
+        // foreign-key edge under the cursor — clicking an edge selects it (and
+        // does not start a pan). Otherwise clear the selection and start a pan.
+        let local = point(
+            ev.position.x - self.canvas_origin.x,
+            ev.position.y - self.canvas_origin.y,
+        );
+        if let Some(id) = self.edge_at(local, cx) {
+            self.select(Selection::Edge(id), cx);
+            return;
+        }
+        self.select(Selection::None, cx);
         self.drag = Some(Drag::Pan { last: ev.position });
         cx.notify();
     }
@@ -157,124 +218,218 @@ impl ErCanvas {
         cx.notify();
     }
 
+    /// Set the selection, notifying only when it actually changes so re-clicking
+    /// the same card doesn't churn the view.
+    fn select(&mut self, sel: Selection, cx: &mut Context<Self>) {
+        if self.selection != sel {
+            self.selection = sel;
+            cx.notify();
+        }
+    }
+
+    /// Find the nearest foreign-key edge within the click radius of `local`
+    /// (canvas-local screen coordinates, i.e. already with the canvas origin
+    /// subtracted). Returns its constraint id so the caller can select it.
+    fn edge_at(&self, local: Point<Pixels>, cx: &App) -> Option<ConstraintId> {
+        const HIT_RADIUS: f32 = 7.0;
+        let doc = self.doc.read(cx);
+        let mut best: Option<(f32, ConstraintId)> = None;
+        for g in Self::local_edges(&doc.layout, &doc.schema.tables) {
+            let d = point_to_bezier_dist(local, &g);
+            if d <= HIT_RADIUS && best.as_ref().map_or(true, |(bd, _)| d < *bd) {
+                best = Some((d, g.id));
+            }
+        }
+        best.map(|(_, id)| id)
+    }
+
+    /// Compute every foreign-key edge's geometry in canvas-local screen
+    /// coordinates. Shared by edge painting (which adds the canvas origin) and
+    /// edge hit-testing, so the visible line and the clickable line stay in
+    /// lockstep.
+    fn local_edges(layout: &GraphLayout, tables: &BTreeMap<TableId, Table>) -> Vec<EdgeGeom> {
+        let mut out = Vec::new();
+        for (from_id, from_table) in tables {
+            let Some(&from_pos) = layout.positions.get(from_id) else {
+                continue;
+            };
+            let from_h = Self::card_height(from_table.columns.len());
+            for c in &from_table.constraints {
+                let Constraint::ForeignKey {
+                    id,
+                    referenced_table,
+                    ..
+                } = c
+                else {
+                    continue;
+                };
+                let to_id = tables
+                    .iter()
+                    .find(|(_, t)| t.name == *referenced_table)
+                    .map(|(tid, _)| tid.clone());
+                let Some(to_id) = to_id else { continue };
+                let Some(&to_pos) = layout.positions.get(&to_id) else {
+                    continue;
+                };
+                let to_h = Self::card_height(
+                    tables.get(&to_id).map(|t| t.columns.len()).unwrap_or(1),
+                );
+
+                // Pick the connecting edges from the cards' relative horizontal
+                // positions, so the arrowhead always points into the referenced
+                // (to) card regardless of where the tables happen to be laid out.
+                let from_cx = from_pos.0 + CARD_W / 2.0;
+                let to_cx = to_pos.0 + CARD_W / 2.0;
+                let from_cy = from_pos.1 + from_h / 2.0;
+                let to_cy = to_pos.1 + to_h / 2.0;
+                let (start, end, tip_dir) = if from_cx <= to_cx {
+                    // from is left of to: out the right edge, into the left
+                    // edge, arrowhead points right (+x).
+                    (
+                        Self::to_screen((from_pos.0 + CARD_W, from_cy), layout),
+                        Self::to_screen((to_pos.0, to_cy), layout),
+                        1.0,
+                    )
+                } else {
+                    // from is right of to: out the left edge, into the right
+                    // edge, arrowhead points left (-x).
+                    (
+                        Self::to_screen((from_pos.0, from_cy), layout),
+                        Self::to_screen((to_pos.0 + CARD_W, to_cy), layout),
+                        -1.0,
+                    )
+                };
+
+                // The S-curve edge: a stroked cubic Bézier. Two control points
+                // — at the 1/3 and 2/3 horizontal marks — bias the curve toward
+                // `start.y` leaving the source and toward `end.y` entering the
+                // target, giving a smoother S than a single control point.
+                let mid_x = (start.x.as_f32() + end.x.as_f32()) / 2.0;
+                let cp_a = point(
+                    px(start.x.as_f32() + (mid_x - start.x.as_f32()) * 0.6),
+                    start.y,
+                );
+                let cp_b = point(
+                    px(end.x.as_f32() - (end.x.as_f32() - mid_x) * 0.6),
+                    end.y,
+                );
+                out.push(EdgeGeom {
+                    id: id.clone(),
+                    from: from_id.clone(),
+                    to: to_id,
+                    start,
+                    end,
+                    cp_a,
+                    cp_b,
+                    tip_dir,
+                });
+            }
+        }
+        out
+    }
+
     /// Build the canvas layer that paints foreign-key edges. Edges sit behind
     /// the cards (this child comes first), so a card's opaque background
     /// naturally clips the line where it would cross a table body.
+    ///
+    /// Styling by selection state:
+    /// - A **selected** edge lights up — a wide, low-alpha primary "halo"
+    ///   behind a thicker solid primary stroke, plus a larger arrowhead. The
+    ///   halo's alpha is tuned per theme so it glows on both light and dark.
+    /// - An edge **connected to the selected table** (either endpoint) draws
+    ///   in primary at normal width, so selecting a table highlights its
+    ///   relations without the full glow.
+    /// - Otherwise the edge is a neutral gray that contrasts with the canvas
+    ///   background on both themes.
     fn edges_layer(&self) -> Canvas<()> {
         let doc = self.doc.clone();
+        let selection = self.selection.clone();
         canvas(
             |_bounds, _window, _cx| {},
             move |bounds, _state, window, cx| {
                 let theme = cx.theme();
-                // Edges need to stand out against the canvas background on
-                // both themes. `border` is too close to `muted` (the canvas
-                // bg) to read, so pick a gray that contrasts with whichever
-                // mode is active: light gray on dark, dark gray on light.
-                let edge_color = if theme.is_dark() {
-                    gpui_kit::gpui::hsla(0.0, 0.0, 0.7, 1.0)
-                } else {
-                    gpui_kit::gpui::hsla(0.0, 0.0, 0.4, 1.0)
-                };
-                // The arrowhead matches the the edge so the line
-                // reads as one continuous stroke into the target.
-                let arrow_color = edge_color;
                 let layout = doc.read(cx).layout.clone();
                 let tables = doc.read(cx).schema.tables.clone();
                 // `paint_path` paints in window-content-absolute coordinates,
-                // clipped by this element's content_mask (see gpui-pre
-                // window.rs:4356). `to_screen` returns coords local to the
-                // canvas pane, so offset every point by the canvas element's
-                // own origin (cf. gpui-component separator.rs:98).
+                // clipped by this element's content_mask. `local_edges` returns
+                // coords local to the canvas pane, so offset every point by the
+                // canvas element's own origin (cf. gpui-component
+                // separator.rs:98).
                 let origin = bounds.origin;
                 let to_win = |p: Point<Pixels>| point(p.x + origin.x, p.y + origin.y);
 
-                for (from_id, from_table) in &tables {
-                    let from_pos = match layout.positions.get(from_id) {
-                        Some(p) => *p,
-                        None => continue,
+                let sel_edge = match &selection {
+                    Selection::Edge(id) => Some(id.clone()),
+                    _ => None,
+                };
+                let sel_table = match &selection {
+                    Selection::Table(id) => Some(id.clone()),
+                    _ => None,
+                };
+
+                for g in Self::local_edges(&layout, &tables) {
+                    let start = to_win(g.start);
+                    let end = to_win(g.end);
+                    let cp_a = to_win(g.cp_a);
+                    let cp_b = to_win(g.cp_b);
+
+                    let is_selected = sel_edge.as_ref() == Some(&g.id);
+                    let is_connected = sel_table
+                        .as_ref()
+                        .map_or(false, |t| t == &g.from || t == &g.to);
+
+                    // Stroke color + width by selection state. Selected and
+                    // connected edges both use the theme accent; selected is
+                    // thicker.
+                    let stroke_color = if is_selected || is_connected {
+                        theme.primary
+                    } else if theme.is_dark() {
+                        hsla(0.0, 0.0, 0.7, 1.0)
+                    } else {
+                        hsla(0.0, 0.0, 0.4, 1.0)
                     };
-                    let from_h = Self::card_height(from_table.columns.len());
-                    for c in &from_table.constraints {
-                        let Constraint::ForeignKey {
-                            referenced_table, ..
-                        } = c
-                        else {
-                            continue;
-                        };
-                        // Find the referenced table by name.
-                        let to_id = tables
-                            .iter()
-                            .find(|(_, t)| t.name == *referenced_table)
-                            .map(|(id, _)| id.clone());
-                        let Some(to_id) = to_id else { continue };
-                        let Some(to_pos) = layout.positions.get(&to_id) else {
-                            continue;
-                        };
-                        let to_h = Self::card_height(
-                            tables.get(&to_id).map(|t| t.columns.len()).unwrap_or(1),
-                        );
+                    let stroke_w = if is_selected {
+                        2.5
+                    } else if is_connected {
+                        2.0
+                    } else {
+                        1.5
+                    };
 
-                        // Pick the connecting edges from the cards' relative
-                        // horizontal positions, so the arrowhead always points
-                        // into the referenced (to) card regardless of where the
-                        // tables happen to be laid out (BTreeMap iteration order
-                        // is by UUID, not by placement).
-                        let from_cx = from_pos.0 + CARD_W / 2.0;
-                        let to_cx = to_pos.0 + CARD_W / 2.0;
-                        let from_cy = from_pos.1 + from_h / 2.0;
-                        let to_cy = to_pos.1 + to_h / 2.0;
+                    // Glow halo only on the selected edge — a wide, low-alpha
+                    // primary stroke behind the solid line so it reads as lit
+                    // up. Alpha is higher on dark so the glow is visible.
+                    if is_selected {
+                        let halo_color =
+                            theme.primary.opacity(if theme.is_dark() { 0.35 } else { 0.25 });
+                        let mut halo = PathBuilder::stroke(px(6.0));
+                        halo.move_to(start);
+                        halo.cubic_bezier_to(end, cp_a, cp_b);
+                        if let Ok(halo_path) = halo.build() {
+                            window.paint_path(halo_path, halo_color);
+                        }
+                    }
 
-                        let (start, end, tip_dir) = if from_cx <= to_cx {
-                            // from is left of to: out the right edge, into the
-                            // left edge, arrowhead points right (+x).
-                            (
-                                to_win(Self::to_screen((from_pos.0 + CARD_W, from_cy), &layout)),
-                                to_win(Self::to_screen((to_pos.0, to_cy), &layout)),
-                                1.0,
-                            )
-                        } else {
-                            // from is right of to: out the left edge, into the
-                            // right edge, arrowhead points left (-x).
-                            (
-                                to_win(Self::to_screen((from_pos.0, from_cy), &layout)),
-                                to_win(Self::to_screen((to_pos.0 + CARD_W, to_cy), &layout)),
-                                -1.0,
-                            )
-                        };
+                    let mut edge = PathBuilder::stroke(px(stroke_w));
+                    edge.move_to(start);
+                    edge.cubic_bezier_to(end, cp_a, cp_b);
+                    if let Ok(edge_path) = edge.build() {
+                        window.paint_path(edge_path, stroke_color);
+                    }
 
-                        // The S-curve edge: a stroked cubic Bézier. Two
-                        // control points — at the 1/3 and 2/3 horizontal
-                        // marks — bias the curve toward `start.y` leaving the
-                        // source card and toward `end.y` entering the target,
-                        // giving a smoother S than a single control point.
-                        // `PathBuilder::stroke` has lyon tessellate the line
-                        // into a band of the given width — `Path` (the scene
-                        // primitive) fills triangles, which would instead
-                        // paint the area under the curve.
-                        let mid_x = (start.x.as_f32() + end.x.as_f32()) / 2.0;
-                        let cp_a = point(px(start.x.as_f32() + (mid_x - start.x.as_f32()) * 0.6), start.y);
-                        let cp_b = point(px(end.x.as_f32() - (end.x.as_f32() - mid_x) * 0.6), end.y);
-                        let mut edge = PathBuilder::stroke(px(1.5));
-                        edge.move_to(start);
-                        edge.cubic_bezier_to(end, cp_a, cp_b);
-                        let edge_path = edge.build().expect("valid edge path");
-                        window.paint_path(edge_path, edge_color);
-
-                        // Solid triangular arrowhead at `end`, pointing into
-                        // the to card along `tip_dir`. A filled triangle is the
-                        // right primitive here (unlike the edge, which wants a
-                        // stroke).
-                        let s = 8.0;
-                        let base_x = end.x.as_f32() - tip_dir * s;
-                        let base_l = point(px(base_x), px(end.y.as_f32() - s / 2.0));
-                        let base_r = point(px(base_x), px(end.y.as_f32() + s / 2.0));
-                        let mut arrow = PathBuilder::fill();
-                        arrow.move_to(end);
-                        arrow.line_to(base_l);
-                        arrow.line_to(base_r);
-                        arrow.line_to(end);
-                        let arrow_path = arrow.build().expect("valid arrow path");
-                        window.paint_path(arrow_path, arrow_color);
+                    // Solid triangular arrowhead at `end`, colored to match the
+                    // stroke, larger when selected.
+                    let s = if is_selected { 10.0 } else { 8.0 };
+                    let base_x = end.x.as_f32() - g.tip_dir * s;
+                    let base_l = point(px(base_x), px(end.y.as_f32() - s / 2.0));
+                    let base_r = point(px(base_x), px(end.y.as_f32() + s / 2.0));
+                    let mut arrow = PathBuilder::fill();
+                    arrow.move_to(end);
+                    arrow.line_to(base_l);
+                    arrow.line_to(base_r);
+                    arrow.line_to(end);
+                    if let Ok(arrow_path) = arrow.build() {
+                        window.paint_path(arrow_path, stroke_color);
                     }
                 }
             },
@@ -303,6 +458,7 @@ impl ErCanvas {
         let card_h = Self::card_height(table.columns.len());
         let theme = view.theme();
         let id_clone = id.clone();
+        let is_selected = self.selection == Selection::Table(id.clone());
 
         let rows = table.columns.iter().map(|col| {
             div()
@@ -329,14 +485,36 @@ impl ErCanvas {
             .h(px(card_h))
             .bg(theme.background)
             .border_1()
-            .border_color(theme.border)
+            .border_color(if is_selected { theme.primary } else { theme.border })
             .rounded_md()
             .overflow_hidden()
-            .shadow_sm()
+            // Selected card: an accent glow (a primary-colored box-shadow with
+            // blur) layered over a subtle drop shadow, so the selection reads
+            // on both light and dark. The glow alpha is tuned per theme —
+            // brighter on dark so it shows up against the dark canvas.
+            .when(is_selected, |this| {
+                let glow = theme.primary.opacity(if theme.is_dark() { 0.5 } else { 0.35 });
+                this.shadow(vec![
+                    BoxShadow::new(
+                        px(0.),
+                        px(4.),
+                        hsla(0., 0., 0., if theme.is_dark() { 0.45 } else { 0.12 }),
+                    )
+                    .blur_radius(px(6.))
+                    .spread_radius(px(-1.)),
+                    BoxShadow::new(px(0.), px(0.), glow)
+                        .blur_radius(px(10.))
+                        .spread_radius(px(2.)),
+                ])
+            })
+            .when(!is_selected, |this| this.shadow_sm())
             .on_mouse_down(
                 gpui_kit::gpui::MouseButton::Left,
                 view.listener(move |this, ev: &MouseDownEvent, window, cx| {
                     cx.stop_propagation();
+                    // Selecting on mouse-down (not click) keeps it in lockstep
+                    // with drag: press selects, drag moves, release ends.
+                    this.select(Selection::Table(id_clone.clone()), cx);
                     this.begin_table_drag(id_clone.clone(), ev, window, cx);
                 }),
             )
@@ -379,6 +557,15 @@ impl Render for ErCanvas {
                 cx.listener(Self::on_mouse_up),
             )
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
+            // Capture the canvas element's window origin each frame so
+            // `on_mouse_down` can convert a window-coordinate click into
+            // canvas-local coordinates for edge hit-testing.
+            .on_prepaint({
+                let view = cx.entity();
+                move |bounds, _window, cx| {
+                    let _ = view.update(cx, |this, _cx| this.canvas_origin = bounds.origin);
+                }
+            })
             .child(edges)
             // Build the cards eagerly — `table_card` borrows `self` and `cx`
             // per call, which the `.children(iter)` map closure can't hold.
@@ -464,4 +651,59 @@ fn pg_label(t: &PostgresType) -> String {
         Array { inner } => format!("{}[]", pg_label(inner)),
         Other { text } => text.clone(),
     }
+}
+
+/// Sample a cubic Bézier at `t` ∈ [0, 1].
+fn bezier_point(
+    t: f32,
+    p0: Point<Pixels>,
+    p1: Point<Pixels>,
+    p2: Point<Pixels>,
+    p3: Point<Pixels>,
+) -> Point<Pixels> {
+    let u = 1.0 - t;
+    let a = u * u * u;
+    let b = 3.0 * u * u * t;
+    let c = 3.0 * u * t * t;
+    let d = t * t * t;
+    point(
+        px(a * p0.x.as_f32() + b * p1.x.as_f32() + c * p2.x.as_f32() + d * p3.x.as_f32()),
+        px(a * p0.y.as_f32() + b * p1.y.as_f32() + c * p2.y.as_f32() + d * p3.y.as_f32()),
+    )
+}
+
+/// Minimum distance from `p` to the cubic Bézier edge, by sampling the curve
+/// into short segments and taking the point-to-segment distance. 24 samples
+/// is plenty at card scale.
+fn point_to_bezier_dist(p: Point<Pixels>, g: &EdgeGeom) -> f32 {
+    const N: usize = 24;
+    let mut prev = g.start;
+    let mut min = f32::MAX;
+    for i in 1..=N {
+        let t = i as f32 / N as f32;
+        let cur = bezier_point(t, g.start, g.cp_a, g.cp_b, g.end);
+        let d = dist_to_segment(p, prev, cur);
+        if d < min {
+            min = d;
+        }
+        prev = cur;
+    }
+    min
+}
+
+/// Distance from point `p` to segment `a`–`b`.
+fn dist_to_segment(p: Point<Pixels>, a: Point<Pixels>, b: Point<Pixels>) -> f32 {
+    let (px, py) = (p.x.as_f32(), p.y.as_f32());
+    let (ax, ay) = (a.x.as_f32(), a.y.as_f32());
+    let (bx, by) = (b.x.as_f32(), b.y.as_f32());
+    let (dx, dy) = (bx - ax, by - ay);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 == 0.0 {
+        0.0
+    } else {
+        (((px - ax) * dx + (py - ay) * dy) / len2).clamp(0.0, 1.0)
+    };
+    let (cx, cy) = (ax + t * dx, ay + t * dy);
+    let (ex, ey) = (px - cx, py - cy);
+    (ex * ex + ey * ey).sqrt()
 }
