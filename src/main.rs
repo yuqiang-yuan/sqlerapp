@@ -16,6 +16,7 @@ use sqlerapp::actions::{
 };
 use sqlerapp::db::{DialectName, DialectType, MySqlType, PostgresType};
 use sqlerapp::document::ErDocument;
+use sqlerapp::er_canvas::ErCanvas;
 use sqlerapp::list_delegate::ObjectsListDelegate;
 use sqlerapp::model::{
     Column, ColumnId, Constraint, ConstraintId, GraphLayout, Schema, Table, TableId,
@@ -28,6 +29,10 @@ pub struct MyApp {
     menu_bar: Entity<AppMenuBar>,
     current_file: Option<PathBuf>,
     document: Option<Entity<ErDocument>>,
+    /// The ER canvas view. Held as an entity (not rebuilt each render) so its
+    /// in-progress `drag` gesture survives re-renders; recreated when a
+    /// document is loaded/created.
+    er_canvas: Option<Entity<ErCanvas>>,
     objects_list: Option<Entity<ListState<ObjectsListDelegate>>>,
     /// Backs `h_resizable` in the editor; owned here so the close hook can
     /// read the split position without reaching back into the widget.
@@ -110,12 +115,30 @@ impl MyApp {
         let left_panel_width = settings.left_panel_width;
         let recent_files = settings.recent_files;
 
+        // TEMP DIAGNOSTIC: start with a sample MySQL document so the ER canvas
+        // renders immediately on launch, no New-dialog interaction needed.
+        let dialect = DialectName::MySql;
+        let schema = sample_schema(&dialect);
+        let layout = sample_layout(&schema);
+        let doc = cx.new(|_| ErDocument {
+            dialect: dialect.clone(),
+            schema,
+            layout,
+            path: None,
+            dirty: false,
+        });
+        let objects_list = cx.new(|cx| {
+            ListState::new(ObjectsListDelegate { doc: doc.clone() }, window, cx)
+        });
+        let er_canvas = cx.new(|_| ErCanvas::new(doc.clone()));
+
         Self {
             focus_handle,
             menu_bar: AppMenuBar::new(cx),
             current_file: None,
-            document: None,
-            objects_list: None,
+            document: Some(doc),
+            er_canvas: Some(er_canvas),
+            objects_list: Some(objects_list),
             resizable_state,
             left_panel_width,
             last_window_bounds: None,
@@ -125,10 +148,11 @@ impl MyApp {
     }
 
     pub fn on_new_action(&mut self, _: &New, window: &mut Window, cx: &mut Context<Self>) {
-        println!("new action executed");
-
         let view = cx.new(|_| NewDocumentDialog {
-            selected_option: None,
+            // Default to MySQL so New → Ok creates a document without forcing
+            // the user to click a radio first (previously the dialog closed
+            // silently when Ok was pressed with no selection).
+            selected_option: Some(0),
         });
 
         window.open_dialog(cx, move |dialog, _, _| {
@@ -180,12 +204,12 @@ impl MyApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        println!("selected database type: {:?}", act.dialect_name);
         let schema = sample_schema(&act.dialect_name);
+        let layout = sample_layout(&schema);
         let doc = cx.new(|_| ErDocument {
             dialect: act.dialect_name.clone(),
             schema,
-            layout: GraphLayout::default(),
+            layout,
             path: None,
             dirty: false,
         });
@@ -193,9 +217,11 @@ impl MyApp {
         let list = cx.new(|cx| {
             ListState::new(ObjectsListDelegate { doc: doc.clone() }, window, cx)
         });
+        let er_canvas = cx.new(|_| ErCanvas::new(doc.clone()));
 
         self.document = Some(doc);
         self.objects_list = Some(list);
+        self.er_canvas = Some(er_canvas);
 
         cx.notify();
     }
@@ -370,8 +396,10 @@ impl MyApp {
         let doc = cx.new(|_| doc);
         let list = cx
             .new(|cx| ListState::new(ObjectsListDelegate { doc: doc.clone() }, window, cx));
+        let er_canvas = cx.new(|_| ErCanvas::new(doc.clone()));
         self.document = Some(doc);
         self.objects_list = Some(list);
+        self.er_canvas = Some(er_canvas);
         if let Some(p) = path {
             self.add_recent(p, cx);
         }
@@ -648,6 +676,28 @@ fn sample_schema(dialect: &DialectName) -> Schema {
     schema
 }
 
+/// A simple grid layout for the sample schema, so the canvas shows the tables
+/// and their foreign-key edge on first open. Tables are placed left-to-right,
+/// wrapping every 3 columns; spacing exceeds the fixed card geometry so cards
+/// never overlap. The layout stays on `GraphLayout` (not on `Table`), so it
+/// is layout-independent and persists with the document.
+fn sample_layout(schema: &Schema) -> GraphLayout {
+    const COLS: usize = 3;
+    const DX: f32 = 300.0;
+    const DY: f32 = 220.0;
+    const X0: f32 = 60.0;
+    const Y0: f32 = 60.0;
+    let mut layout = GraphLayout::default();
+    for (i, id) in schema.tables.keys().enumerate() {
+        let col = (i % COLS) as f32;
+        let row = (i / COLS) as f32;
+        layout
+            .positions
+            .insert(id.clone(), (X0 + col * DX, Y0 + row * DY));
+    }
+    layout
+}
+
 /// The no-document welcome screen: a New/Open prompt plus a list of the
 /// most-recent files. Clicking a recent entry dispatches `Open { path: Some
 /// }` to open it directly; the Open button dispatches `Open { path: None }`
@@ -838,9 +888,11 @@ impl MyApp {
                     )
                     .child(
                         div()
-                            .id("right-panel")
-                            .p_1()
-                            .child("Right Panel")
+                            .id("er-canvas-pane")
+                            .size_full()
+                            .when_some(self.er_canvas.as_ref(), |pane, canvas| {
+                                pane.child(canvas.clone())
+                            })
                             .into_any_element()
                     ),
             )

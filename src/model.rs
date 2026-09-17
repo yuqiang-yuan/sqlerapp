@@ -256,8 +256,35 @@ pub enum RelationKind {
 }
 
 /// Map of [`TableId`] → canvas position, stored separately from [`Table`]
-/// so logical structure is layout-independent.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+/// so logical structure is layout-independent. Carries the canvas viewport
+/// (pan offset + zoom scale) so the view survives reload.
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct GraphLayout {
     pub positions: BTreeMap<TableId, (f32, f32)>,
+    /// Pan offset, in screen pixels added after scaling.
+    #[serde(default)]
+    pub offset: (f32, f32),
+    /// Zoom factor, default 1.0.
+    #[serde(default = "default_scale")]
+    pub scale: f32,
+}
+
+impl Default for GraphLayout {
+    /// `Default` derive would give `scale = 0.0` (f32's default), which
+    /// collapses every card's screen coord to the offset and makes table
+    /// dragging divide by zero (`dx / scale`). Keep this in sync with the
+    /// serde `default = "default_scale"` so freshly-constructed documents
+    /// (which build a `GraphLayout::default()`, not a deserialized one) start
+    /// at scale 1.0 too.
+    fn default() -> Self {
+        Self {
+            positions: BTreeMap::new(),
+            offset: (0.0, 0.0),
+            scale: default_scale(),
+        }
+    }
+}
+
+fn default_scale() -> f32 {
+    1.0
 }
