@@ -9,6 +9,7 @@ use gpui_kit::component::status_bar::StatusBar;
 use gpui_kit::component::*;
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::*;
+use gpui_kit::gpui::KeyBinding;
 use rust_embed::Embed;
 use sqlerapp::actions::{
     About, New, NewDialogConfirmed, NewRelationship, NewTable, Open, Quit, Redo, Save, Undo,
@@ -55,6 +56,29 @@ impl MyApp {
             let menus = build_menus().into_iter().map(|menu| menu.owned()).collect();
             GlobalState::global_mut(cx).set_app_menus(menus);
         }
+
+        // Bind keyboard shortcuts for the menu actions so they can be
+        // triggered and so their keystrokes show on the right of each menu
+        // item. `secondary` is the platform-portable modifier — Cmd on macOS,
+        // Ctrl on Windows/Linux (parsed in gpui's `Keystroke::parse`).
+        //
+        // Redo follows each platform's convention: Cmd-Shift-Z on macOS,
+        // Ctrl-Y on Windows/Linux. The rest are uniform across platforms.
+        #[cfg(target_os = "macos")]
+        let redo_binding = KeyBinding::new("secondary-shift-z", Redo, None);
+        #[cfg(not(target_os = "macos"))]
+        let redo_binding = KeyBinding::new("secondary-y", Redo, None);
+
+        cx.bind_keys([
+            KeyBinding::new("secondary-n", New, None),
+            KeyBinding::new("secondary-o", Open { path: None }, None),
+            KeyBinding::new("secondary-s", Save, None),
+            KeyBinding::new("secondary-q", Quit, None),
+            KeyBinding::new("secondary-z", Undo, None),
+            redo_binding,
+            KeyBinding::new("secondary-t", NewTable, None),
+            KeyBinding::new("secondary-r", NewRelationship, None),
+        ]);
 
         let focus_handle = cx.focus_handle();
         focus_handle.focus(window, cx);
