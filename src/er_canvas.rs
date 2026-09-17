@@ -2,10 +2,11 @@
 //!
 //! Tables render as absolutely-positioned `div` cards (so text, theme colors,
 //! and later click/edit come for free). Foreign-key relations render on a
-//! `canvas` layer behind the cards using `Path::curve_to` + a triangle arrow
-//! head — `Svg` is single-color alpha-mask (see memory
-//! `gpui-secondary-modifier-portable-keybinding` context), unsuited to a
-//! multi-color ER diagram, so edges use `canvas` + `paint_path` instead.
+//! `canvas` layer behind the cards using `PathBuilder::stroke` cubic Béziers
+//! (via lyon tessellation) + a filled triangle arrow head — `Path` (the scene
+//! primitive) fills triangles, so a stroked edge needs `PathBuilder`; `Svg` is
+//! single-color alpha-mask, unsuited to a multi-color ER diagram, so edges use
+//! `canvas` + `paint_path` instead.
 //!
 //! State lives entirely on `ErDocument`'s `GraphLayout` (positions, pan
 //! offset, zoom scale), so the view holds only the in-progress drag gesture
@@ -17,8 +18,9 @@ use std::collections::BTreeMap;
 
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::gpui::{
-    Canvas, Context, Entity, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Path,
-    Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Window, canvas, div, point, px,
+    Canvas, Context, Entity, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PathBuilder, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Window, canvas,
+    div, point, px,
 };
 use gpui_kit::base::StyledExt;
 // Bring in the GPUI element traits (ParentElement, StatefulInteractiveElement,
@@ -163,11 +165,19 @@ impl ErCanvas {
         canvas(
             |_bounds, _window, _cx| {},
             move |bounds, _state, window, cx| {
-                let _theme = cx.theme();
-                // TODO: derive edge/arrow colors from the theme once the edge
-                // layer is stable; high-contrast placeholders for now.
-                let edge_color = gpui_kit::gpui::red();
-                let arrow_color = gpui_kit::gpui::black();
+                let theme = cx.theme();
+                // Edges need to stand out against the canvas background on
+                // both themes. `border` is too close to `muted` (the canvas
+                // bg) to read, so pick a gray that contrasts with whichever
+                // mode is active: light gray on dark, dark gray on light.
+                let edge_color = if theme.is_dark() {
+                    gpui_kit::gpui::hsla(0.0, 0.0, 0.7, 1.0)
+                } else {
+                    gpui_kit::gpui::hsla(0.0, 0.0, 0.4, 1.0)
+                };
+                // The arrowhead matches the the edge so the line
+                // reads as one continuous stroke into the target.
+                let arrow_color = edge_color;
                 let layout = doc.read(cx).layout.clone();
                 let tables = doc.read(cx).schema.tables.clone();
                 // `paint_path` paints in window-content-absolute coordinates,
@@ -232,28 +242,39 @@ impl ErCanvas {
                             )
                         };
 
-                        // Smooth S-curve: a single control point at the
-                        // horizontal midpoint, biased toward the start's y.
-                        let cp = point(
-                            px((start.x.as_f32() + end.x.as_f32()) / 2.0),
-                            start.y,
-                        );
-                        let mut path = Path::new(start);
-                        path.curve_to(end, cp);
-                        window.paint_path(path, edge_color);
+                        // The S-curve edge: a stroked cubic Bézier. Two
+                        // control points — at the 1/3 and 2/3 horizontal
+                        // marks — bias the curve toward `start.y` leaving the
+                        // source card and toward `end.y` entering the target,
+                        // giving a smoother S than a single control point.
+                        // `PathBuilder::stroke` has lyon tessellate the line
+                        // into a band of the given width — `Path` (the scene
+                        // primitive) fills triangles, which would instead
+                        // paint the area under the curve.
+                        let mid_x = (start.x.as_f32() + end.x.as_f32()) / 2.0;
+                        let cp_a = point(px(start.x.as_f32() + (mid_x - start.x.as_f32()) * 0.6), start.y);
+                        let cp_b = point(px(end.x.as_f32() - (end.x.as_f32() - mid_x) * 0.6), end.y);
+                        let mut edge = PathBuilder::stroke(px(1.5));
+                        edge.move_to(start);
+                        edge.cubic_bezier_to(end, cp_a, cp_b);
+                        let edge_path = edge.build().expect("valid edge path");
+                        window.paint_path(edge_path, edge_color);
 
-                        // Arrow head at `end`, pointing into the to card. The
-                        // base sits on the opposite side of the tip from the
-                        // travel direction.
-                        let s = 6.0;
+                        // Solid triangular arrowhead at `end`, pointing into
+                        // the to card along `tip_dir`. A filled triangle is the
+                        // right primitive here (unlike the edge, which wants a
+                        // stroke).
+                        let s = 8.0;
                         let base_x = end.x.as_f32() - tip_dir * s;
                         let base_l = point(px(base_x), px(end.y.as_f32() - s / 2.0));
                         let base_r = point(px(base_x), px(end.y.as_f32() + s / 2.0));
-                        let mut arrow = Path::new(end);
+                        let mut arrow = PathBuilder::fill();
+                        arrow.move_to(end);
                         arrow.line_to(base_l);
                         arrow.line_to(base_r);
                         arrow.line_to(end);
-                        window.paint_path(arrow, arrow_color);
+                        let arrow_path = arrow.build().expect("valid arrow path");
+                        window.paint_path(arrow_path, arrow_color);
                     }
                 }
             },
@@ -306,10 +327,9 @@ impl ErCanvas {
             .top(screen.y)
             .w(px(CARD_W))
             .h(px(card_h))
-            // TODO: theme the card background; placeholder yellow for now.
-            .bg(gpui_kit::gpui::yellow())
+            .bg(theme.background)
             .border_1()
-            .border_color(gpui_kit::gpui::black())
+            .border_color(theme.border)
             .rounded_md()
             .overflow_hidden()
             .shadow_sm()

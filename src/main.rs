@@ -115,30 +115,13 @@ impl MyApp {
         let left_panel_width = settings.left_panel_width;
         let recent_files = settings.recent_files;
 
-        // TEMP DIAGNOSTIC: start with a sample MySQL document so the ER canvas
-        // renders immediately on launch, no New-dialog interaction needed.
-        let dialect = DialectName::MySql;
-        let schema = sample_schema(&dialect);
-        let layout = sample_layout(&schema);
-        let doc = cx.new(|_| ErDocument {
-            dialect: dialect.clone(),
-            schema,
-            layout,
-            path: None,
-            dirty: false,
-        });
-        let objects_list = cx.new(|cx| {
-            ListState::new(ObjectsListDelegate { doc: doc.clone() }, window, cx)
-        });
-        let er_canvas = cx.new(|_| ErCanvas::new(doc.clone()));
-
         Self {
             focus_handle,
             menu_bar: AppMenuBar::new(cx),
             current_file: None,
-            document: Some(doc),
-            er_canvas: Some(er_canvas),
-            objects_list: Some(objects_list),
+            document: None,
+            er_canvas: None,
+            objects_list: None,
             resizable_state,
             left_panel_width,
             last_window_bounds: None,
