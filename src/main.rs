@@ -847,7 +847,7 @@ fn theme_button(cx: &App) -> impl IntoElement {
 }
 
 impl MyApp {
-    fn editor_view(&self, _cx: &mut Context<Self>) -> impl IntoElement {
+    fn editor_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .v_flex()
@@ -870,13 +870,44 @@ impl MyApp {
                             ),
                     )
                     .child(
-                        div()
-                            .id("er-canvas-pane")
-                            .size_full()
-                            .when_some(self.er_canvas.as_ref(), |pane, canvas| {
-                                pane.child(canvas.clone())
-                            })
-                            .into_any_element()
+                        // The right pane is itself a vertical resizable split:
+                        // the ER render image on top, a reserved strip below for
+                        // future content (placeholder text for now). The group
+                        // owns no caller state, so its divider position lives in
+                        // `window.use_keyed_state` under the "v-resizer" id —
+                        // enough to survive re-renders without disk persistence.
+                        v_resizable("v-resizer")
+                            .child(
+                                resizable_panel()
+                                    .size_range(px(200.0)..px(4000.0))
+                                    .child(
+                                        div()
+                                            .id("er-canvas-pane")
+                                            .size_full()
+                                            .when_some(self.er_canvas.as_ref(), |pane, canvas| {
+                                                pane.child(canvas.clone())
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                resizable_panel()
+                                    .size(px(180.0))
+                                    .flex_none()
+                                    .size_range(px(100.0)..px(500.0))
+                                    .child(
+                                        div()
+                                            .id("render-bottom-pane")
+                                            .size_full()
+                                            .flex()
+                                            .items_center()
+                                            .justify_center()
+                                            .child(
+                                                div()
+                                                    .text_color(cx.theme().muted_foreground)
+                                                    .child("Placeholder"),
+                                            ),
+                                    ),
+                            ),
                     ),
             )
             .child(StatusBar::new().left("Ready"))
