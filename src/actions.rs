@@ -7,6 +7,8 @@
 //! example.
 
 
+use std::path::PathBuf;
+
 use gpui_kit::gpui::Action;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -19,9 +21,15 @@ use crate::db::DialectName;
 pub struct About;
 
 /// Open a file.
-#[derive(Action, Clone, PartialEq, Eq)]
+///
+/// `path == None` opens the platform file dialog (the Open menu item).
+/// `path == Some` opens that path directly — used by the recent-files list on
+/// the welcome screen, which dispatches one entry per click.
+#[derive(Action, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[action(namespace = sqlerapp)]
-pub struct Open;
+pub struct Open {
+    pub path: Option<PathBuf>,
+}
 
 /// Create a new (untitled) document.
 #[derive(Action, Clone, PartialEq, Eq)]
@@ -43,3 +51,26 @@ pub struct Save;
 #[derive(Action, Clone, PartialEq, Eq)]
 #[action(namespace = sqlerapp)]
 pub struct Quit;
+
+/// Edit → Undo. Not yet backed by a history system; the menu item is wired
+/// so the shortcut and menu entry exist, with a placeholder handler.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = sqlerapp)]
+pub struct Undo;
+
+/// Edit → Redo. See [`Undo`].
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = sqlerapp)]
+pub struct Redo;
+
+/// Edit → New Table. Inserts an empty, auto-named table into the current
+/// document's schema and refreshes the objects list.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = sqlerapp)]
+pub struct NewTable;
+
+/// Edit → New Relationship. Not yet implemented; the menu item is wired as a
+/// placeholder so the shortcut exists, with a notification handler.
+#[derive(Action, Clone, PartialEq, Eq)]
+#[action(namespace = sqlerapp)]
+pub struct NewRelationship;

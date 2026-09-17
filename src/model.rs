@@ -22,6 +22,7 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::db::DialectType;
@@ -32,7 +33,7 @@ use crate::db::DialectType;
 // a fresh UUID when constructing an entity.
 
 /// Identifier of a table within a schema.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TableId(pub String);
 
 impl TableId {
@@ -43,7 +44,7 @@ impl TableId {
 }
 
 /// Identifier of a column within a table.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ColumnId(pub String);
 
 impl ColumnId {
@@ -54,7 +55,7 @@ impl ColumnId {
 }
 
 /// Identifier of a constraint within a table.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ConstraintId(pub String);
 
 impl ConstraintId {
@@ -65,7 +66,7 @@ impl ConstraintId {
 }
 
 /// Identifier of an index within a table.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct IndexId(pub String);
 
 impl IndexId {
@@ -104,7 +105,7 @@ pub type TypeName = String;
 /// Dialect-agnostic in structure (the dialect is a document property); the
 /// chosen dialect only constrains which arm of [`DialectType`] appears on
 /// columns.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Schema {
     pub tables: BTreeMap<TableId, Table>,
     /// Schema-level type definitions: PG `CREATE TYPE name AS ENUM (...)`,
@@ -120,7 +121,7 @@ impl Schema {
 }
 
 /// A schema-level type definition.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TypeDef {
     /// `CREATE TYPE name AS ENUM ('a','b')` (PG).
     Enum { values: Vec<String> },
@@ -131,7 +132,7 @@ pub enum TypeDef {
 }
 
 /// A table — the primary logical structure.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Table {
     pub id: TableId,
     pub name: String,
@@ -142,7 +143,7 @@ pub struct Table {
 }
 
 /// A column.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Column {
     pub id: ColumnId,
     pub name: String,
@@ -159,7 +160,7 @@ pub struct Column {
 }
 
 /// A table-level integrity constraint (parsed from `CREATE TABLE`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Constraint {
     /// `PRIMARY KEY (cols)` / `CONSTRAINT name PRIMARY KEY (cols)`.
     PrimaryKey {
@@ -205,7 +206,7 @@ impl Constraint {
 }
 
 /// ON DELETE / ON UPDATE behavior of a foreign key.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReferentialAction {
     Cascade,
     SetNull,
@@ -217,7 +218,7 @@ pub enum ReferentialAction {
 /// A secondary index (`INDEX`) — a performance structure, not an integrity
 /// constraint. A `UNIQUE INDEX` is folded into [`Index::unique`] rather than
 /// a [`Constraint::Unique`].
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Index {
     pub id: IndexId,
     pub name: Option<String>,
@@ -228,7 +229,7 @@ pub struct Index {
 
 /// A column targeted by an index. MySQL allows a prefix length like
 /// `name(10)`; `prefix_length` captures it when present.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct IndexColumn {
     pub name: String,
     pub prefix_length: Option<u32>,
@@ -236,7 +237,7 @@ pub struct IndexColumn {
 
 /// A derived ER relation — a **view** over [`Constraint::ForeignKey`], not a
 /// source of truth. May be recomputed from the schema at render time.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Relation {
     /// The id of the source FK constraint this relation is derived from.
     pub from_constraint: ConstraintId,
@@ -248,7 +249,7 @@ pub struct Relation {
 }
 
 /// Relationship cardinality for display.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RelationKind {
     OneToOne,
     OneToMany,
@@ -256,7 +257,7 @@ pub enum RelationKind {
 
 /// Map of [`TableId`] → canvas position, stored separately from [`Table`]
 /// so logical structure is layout-independent.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct GraphLayout {
     pub positions: BTreeMap<TableId, (f32, f32)>,
 }

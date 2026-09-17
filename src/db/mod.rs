@@ -34,7 +34,7 @@ pub enum DialectName {
 ///
 /// Wraps the per-dialect type enum so `Column.ty` has one concrete type
 /// regardless of dialect, without paying for a neutral canonical type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum DialectType {
     MySql(MySqlType),
     Postgres(PostgresType),

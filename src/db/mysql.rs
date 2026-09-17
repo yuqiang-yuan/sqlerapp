@@ -5,8 +5,10 @@
 //! by the parser). Version differences are **not** modeled — no warnings,
 //! no stripping.
 
+use serde::{Deserialize, Serialize};
+
 /// A MySQL column data type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum MySqlType {
     // —— Integer ——
     /// `TINYINT`.
@@ -75,7 +77,7 @@ pub enum MySqlType {
 }
 
 /// Size modifier for the `TEXT` family.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum TextSize {
     /// `TINYTEXT`.
     Tiny,
@@ -88,7 +90,7 @@ pub enum TextSize {
 }
 
 /// Size modifier for the `BLOB` family (mirrors [`TextSize`]).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum BlobSize {
     /// `TINYBLOB`.
     Tiny,

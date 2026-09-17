@@ -2,8 +2,10 @@
 //!
 //! Stored verbatim; version differences are not modeled.
 
+use serde::{Deserialize, Serialize};
+
 /// A PostgreSQL column data type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum PostgresType {
     // —— Integer ——
     /// `SMALLINT` / `INT2`.
@@ -102,7 +104,7 @@ pub enum PostgresType {
 }
 
 /// Sub-kind of PG geometric type.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum GeometricKind {
     Point,
     Line,

@@ -36,6 +36,12 @@ pub struct AppSettings {
     /// fed back as the panel's `initial_size` on the next launch.
     #[serde(default)]
     pub left_panel_width: Option<Pixels>,
+
+    /// Recently opened files, most-recent-first, capped at 10. Shown on the
+    /// welcome screen; a click reopens the file directly. Built up as files
+    /// are opened, persisted so the list survives restarts.
+    #[serde(default)]
+    pub recent_files: Vec<PathBuf>,
 }
 
 impl Default for AppSettings {
@@ -45,6 +51,7 @@ impl Default for AppSettings {
             theme_mode: default_theme_mode(),
             font_size: None,
             left_panel_width: None,
+            recent_files: Vec::new(),
         }
     }
 }
@@ -161,6 +168,7 @@ mod tests {
             theme_mode: ThemeMode::Dark,
             font_size: Some(px(14.)),
             left_panel_width: Some(px(220.)),
+            recent_files: vec![],
         };
         let json = serde_json::to_string(&settings).unwrap();
         let back: AppSettings = serde_json::from_str(&json).unwrap();
