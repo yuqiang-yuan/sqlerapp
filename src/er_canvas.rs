@@ -19,9 +19,9 @@ use std::collections::BTreeMap;
 
 use gpui_kit::component::ActiveTheme;
 use gpui_kit::gpui::{
-    BoxShadow, Canvas, Context, Entity, IntoElement, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    PathBuilder, Pixels, Point, Render, ScrollDelta, ScrollWheelEvent, Styled, Window, canvas,
-    div, hsla, point, px,
+    BoxShadow, Canvas, Context, Entity, EventEmitter, IntoElement, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, PathBuilder, Pixels, Point, Render, ScrollDelta,
+    ScrollWheelEvent, Styled, Window, canvas, div, hsla, point, px,
 };
 use gpui_kit::base::{ElementExt, StyledExt};
 use gpui_kit::prelude::FluentBuilder;
@@ -53,9 +53,10 @@ enum Drag {
 /// What is currently selected on the canvas. Transient view state — not
 /// persisted with the document — so reloading a file starts with nothing
 /// selected. Single selection: clicking a card selects the table, clicking an
-/// edge selects the edge, clicking empty canvas clears it.
+/// edge selects the edge, clicking empty canvas clears it. Public so the SQL
+/// panel can read the selection and subscribe to [`SelectionChanged`].
 #[derive(Clone, Debug, PartialEq)]
-enum Selection {
+pub enum Selection {
     /// No selection.
     None,
     /// A table card.
@@ -63,6 +64,12 @@ enum Selection {
     /// A foreign-key edge (identified by its constraint id).
     Edge(ConstraintId),
 }
+
+/// Emitted from [`ErCanvas::select`] whenever the selection changes, so a
+/// sibling view (the SQL panel) can react without polling. Carries the new
+/// selection; [`ErCanvas`] implements [`EventEmitter`] for this.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SelectionChanged(pub Selection);
 
 impl Default for Selection {
     fn default() -> Self {
@@ -218,11 +225,18 @@ impl ErCanvas {
         cx.notify();
     }
 
+    /// The current canvas selection (table, edge, or none).
+    pub fn selection(&self) -> &Selection {
+        &self.selection
+    }
+
     /// Set the selection, notifying only when it actually changes so re-clicking
-    /// the same card doesn't churn the view.
+    /// the same card doesn't churn the view. Emits [`SelectionChanged`] so a
+    /// sibling SQL panel can react without polling.
     fn select(&mut self, sel: Selection, cx: &mut Context<Self>) {
         if self.selection != sel {
             self.selection = sel;
+            cx.emit(SelectionChanged(self.selection.clone()));
             cx.notify();
         }
     }
@@ -532,6 +546,10 @@ impl ErCanvas {
             .children(rows)
     }
 }
+
+/// `ErCanvas` emits [`SelectionChanged`] whenever the selection changes, so a
+/// sibling SQL panel can react (regenerate the editor's SQL) without polling.
+impl EventEmitter<SelectionChanged> for ErCanvas {}
 
 impl Render for ErCanvas {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {

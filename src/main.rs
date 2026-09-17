@@ -18,6 +18,7 @@ use sqlerapp::db::{DialectName, DialectType, MySqlType, PostgresType};
 use sqlerapp::document::ErDocument;
 use sqlerapp::er_canvas::ErCanvas;
 use sqlerapp::list_delegate::ObjectsListDelegate;
+use sqlerapp::sql_panel::SqlPanel;
 use sqlerapp::model::{
     Column, ColumnId, Constraint, ConstraintId, GraphLayout, Schema, Table, TableId,
 };
@@ -33,6 +34,9 @@ pub struct MyApp {
     /// in-progress `drag` gesture survives re-renders; recreated when a
     /// document is loaded/created.
     er_canvas: Option<Entity<ErCanvas>>,
+    /// The SQL editor panel bound to the canvas selection. Created alongside
+    /// `er_canvas` (it subscribes to the canvas's `SelectionChanged`).
+    sql_panel: Option<Entity<SqlPanel>>,
     objects_list: Option<Entity<ListState<ObjectsListDelegate>>>,
     /// Backs `h_resizable` in the editor; owned here so the close hook can
     /// read the split position without reaching back into the widget.
@@ -121,6 +125,7 @@ impl MyApp {
             current_file: None,
             document: None,
             er_canvas: None,
+            sql_panel: None,
             objects_list: None,
             resizable_state,
             left_panel_width,
@@ -201,10 +206,12 @@ impl MyApp {
             ListState::new(ObjectsListDelegate { doc: doc.clone() }, window, cx)
         });
         let er_canvas = cx.new(|_| ErCanvas::new(doc.clone()));
+        let sql_panel = cx.new(|cx| SqlPanel::new(doc.clone(), er_canvas.clone(), window, cx));
 
         self.document = Some(doc);
         self.objects_list = Some(list);
         self.er_canvas = Some(er_canvas);
+        self.sql_panel = Some(sql_panel);
 
         cx.notify();
     }
@@ -340,9 +347,14 @@ impl MyApp {
                                     cx,
                                 )
                             });
+                            let er_canvas = cx.new(|_| ErCanvas::new(doc.clone()));
+                            let sql_panel =
+                                cx.new(|cx| SqlPanel::new(doc.clone(), er_canvas.clone(), window, cx));
                             view.update(cx, |app, cx| {
                                 app.document = Some(doc);
                                 app.objects_list = Some(list);
+                                app.er_canvas = Some(er_canvas);
+                                app.sql_panel = Some(sql_panel);
                                 if let Some(p) = path_for_recent {
                                     app.add_recent(p, cx);
                                 }
@@ -380,9 +392,11 @@ impl MyApp {
         let list = cx
             .new(|cx| ListState::new(ObjectsListDelegate { doc: doc.clone() }, window, cx));
         let er_canvas = cx.new(|_| ErCanvas::new(doc.clone()));
+        let sql_panel = cx.new(|cx| SqlPanel::new(doc.clone(), er_canvas.clone(), window, cx));
         self.document = Some(doc);
         self.objects_list = Some(list);
         self.er_canvas = Some(er_canvas);
+        self.sql_panel = Some(sql_panel);
         if let Some(p) = path {
             self.add_recent(p, cx);
         }
@@ -847,7 +861,7 @@ fn theme_button(cx: &App) -> impl IntoElement {
 }
 
 impl MyApp {
-    fn editor_view(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn editor_view(&self, _cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .size_full()
             .v_flex()
@@ -896,16 +910,11 @@ impl MyApp {
                                     .size_range(px(100.0)..px(500.0))
                                     .child(
                                         div()
-                                            .id("render-bottom-pane")
+                                            .id("sql-panel-pane")
                                             .size_full()
-                                            .flex()
-                                            .items_center()
-                                            .justify_center()
-                                            .child(
-                                                div()
-                                                    .text_color(cx.theme().muted_foreground)
-                                                    .child("Placeholder"),
-                                            ),
+                                            .when_some(self.sql_panel.as_ref(), |pane, panel| {
+                                                pane.child(panel.clone())
+                                            }),
                                     ),
                             ),
                     ),

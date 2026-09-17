@@ -5,3 +5,5 @@ pub mod er_canvas;
 pub mod list_delegate;
 pub mod model;
 pub mod settings;
+pub mod sql;
+pub mod sql_panel;
