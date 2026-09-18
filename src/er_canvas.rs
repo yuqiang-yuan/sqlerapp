@@ -14,6 +14,15 @@
 //! everything else persists with the document. Coordinates:
 //!   `screen = logical * scale + offset`
 //! and dragging a table writes back `logical = (screen - offset) / scale`.
+//!
+//! The zoom/pan is a canvas-wide transform: card positions, card sizes, card
+//! fonts, and edge stroke widths all go through the same mapping (every
+//! dimension × `scale`), so zooming scales tables and FK edges as a unit
+//! instead of just moving their corners. GPUI divs have no transform matrix
+//! (only `Svg` does, and transforms there skip hit-testing), so the scaling is
+//! applied per card rather than via one container transform. `GraphLayout`
+//! serializes `offset`/`scale` into the `.sqler` file, so the viewport
+//! survives save/reload.
 
 use std::collections::BTreeMap;
 
@@ -117,7 +126,8 @@ impl ErCanvas {
         }
     }
 
-    /// Card height for the given column count: header + one row per column.
+    /// Card height in logical units for the given column count: header + one
+    /// row per column (the card DOM must mirror this — see `table_card`).
     fn card_height(columns: usize) -> f32 {
         CARD_HEADER_H + CARD_ROW_H * columns.max(1) as f32
     }
@@ -159,6 +169,10 @@ impl ErCanvas {
                 self.doc.update(cx, |doc, cx| {
                     doc.layout.offset.0 += dx;
                     doc.layout.offset.1 += dy;
+                    // The offset is persisted with the document, so a pan is
+                    // an edit just like dragging a table — mark dirty so the
+                    // on-screen viewport can't silently diverge from the file.
+                    doc.mark_dirty();
                     cx.notify();
                 });
                 self.drag = Some(Drag::Pan { last: ev.position });
@@ -188,12 +202,15 @@ impl ErCanvas {
     }
 
     fn on_scroll_wheel(&mut self, ev: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
-        // Wheel zoom toward the cursor, clamped to [0.25, 3.0].
+        // Wheel zoom toward the cursor, clamped to [0.25, 3.0]. The offset is
+        // part of the same transform, so it rebalances around the cursor to
+        // keep the logical point under it stationary.
         let dy = match ev.delta {
             ScrollDelta::Pixels(p) => p.y.as_f32(),
             ScrollDelta::Lines(l) => l.y * 40.0,
         };
         let cursor = ev.position;
+        let canvas_origin = self.canvas_origin;
         self.doc.update(cx, |doc, cx| {
             let layout = &mut doc.layout;
             let old_scale = layout.scale;
@@ -201,13 +218,20 @@ impl ErCanvas {
             if new_scale == old_scale {
                 return;
             }
-            // Keep `cursor` anchored: logical = (cursor - offset) / old_scale,
+            // The wheel handler lives on the outer pane, but the transform is
+            // relative to the canvas element itself: work in canvas-local
+            // coordinates so the anchor point survives the pane moving or
+            // being resized.
+            let cx_local = cursor.x.as_f32() - canvas_origin.x.as_f32();
+            let cy_local = cursor.y.as_f32() - canvas_origin.y.as_f32();
+            // Keep the cursor anchored: logical = (cursor - offset) / old_scale,
             // then offset = cursor - logical * new_scale.
-            let logical_x = (cursor.x.as_f32() - layout.offset.0) / old_scale;
-            let logical_y = (cursor.y.as_f32() - layout.offset.1) / old_scale;
+            let logical_x = (cx_local - layout.offset.0) / old_scale;
+            let logical_y = (cy_local - layout.offset.1) / old_scale;
             layout.scale = new_scale;
-            layout.offset.0 = cursor.x.as_f32() - logical_x * new_scale;
-            layout.offset.1 = cursor.y.as_f32() - logical_y * new_scale;
+            layout.offset.0 = cx_local - logical_x * new_scale;
+            layout.offset.1 = cy_local - logical_y * new_scale;
+            doc.mark_dirty();
             cx.notify();
         });
     }
@@ -258,9 +282,12 @@ impl ErCanvas {
     }
 
     /// Compute every foreign-key edge's geometry in canvas-local screen
-    /// coordinates. Shared by edge painting (which adds the canvas origin) and
-    /// edge hit-testing, so the visible line and the clickable line stay in
-    /// lockstep.
+    /// coordinates (logical × scale + offset). Endpoints sit on the *scaled*
+    /// card borders because `to_screen` scales the card-corner math, matching
+    /// cards that are laid out at `CARD_W * scale` × `card_height * scale`.
+    /// Shared by edge painting (which adds the canvas origin) and edge
+    /// hit-testing, so the visible line and the clickable line stay in
+    /// lockstep at any zoom.
     fn local_edges(layout: &GraphLayout, tables: &BTreeMap<TableId, Table>) -> Vec<EdgeGeom> {
         let mut out = Vec::new();
         for (from_id, from_table) in tables {
@@ -381,6 +408,11 @@ impl ErCanvas {
                     _ => None,
                 };
 
+                // Stroke widths are logical dimensions: scale them with the
+                // canvas so the lines and arrowheads grow/shrink with the
+                // cards instead of staying screen-fixed. A small floor keeps
+                // them visible when zoomed far out.
+                let scale = layout.scale.max(0.25);
                 for g in Self::local_edges(&layout, &tables) {
                     let start = to_win(g.start);
                     let end = to_win(g.end);
@@ -408,7 +440,7 @@ impl ErCanvas {
                         2.0
                     } else {
                         1.5
-                    };
+                    } * scale;
 
                     // Glow halo only on the selected edge — a wide, low-alpha
                     // primary stroke behind the solid line so it reads as lit
@@ -416,7 +448,7 @@ impl ErCanvas {
                     if is_selected {
                         let halo_color =
                             theme.primary.opacity(if theme.is_dark() { 0.35 } else { 0.25 });
-                        let mut halo = PathBuilder::stroke(px(6.0));
+                        let mut halo = PathBuilder::stroke(px(6.0 * scale));
                         halo.move_to(start);
                         halo.cubic_bezier_to(end, cp_a, cp_b);
                         if let Ok(halo_path) = halo.build() {
@@ -432,8 +464,8 @@ impl ErCanvas {
                     }
 
                     // Solid triangular arrowhead at `end`, colored to match the
-                    // stroke, larger when selected.
-                    let s = if is_selected { 10.0 } else { 8.0 };
+                    // stroke, larger when selected. Scaled like the stroke.
+                    let s = if is_selected { 10.0 } else { 8.0 } * scale;
                     let base_x = end.x.as_f32() - g.tip_dir * s;
                     let base_l = point(px(base_x), px(end.y.as_f32() - s / 2.0));
                     let base_r = point(px(base_x), px(end.y.as_f32() + s / 2.0));
@@ -454,7 +486,10 @@ impl ErCanvas {
         .size_full()
     }
 
-    /// One table card: absolutely positioned by `GraphLayout`, scaled + panned.
+    /// One table card: absolutely positioned by `GraphLayout`. The whole
+    /// card — position, size, paddings, fonts, border — is multiplied by
+    /// `layout.scale`, so zooming scales the card as a unit and the edge
+    /// layer's scaled-corner math keeps landing exactly on the card borders.
     fn table_card(&self, id: &TableId, view: &Context<Self>) -> impl IntoElement {
         let doc = self.doc.read(view);
         let layout = doc.layout.clone();
@@ -465,26 +500,39 @@ impl ErCanvas {
             .expect("card id must reference an existing table");
         let pos = layout.positions.get(id).copied().unwrap_or((40.0, 40.0));
         let screen = Self::to_screen(pos, &layout);
-        // Explicit height keeps it in lockstep with `card_height` (the same
-        // formula the edge layer uses to estimate card bounds), so edges land
-        // exactly on the card edges — and taffy sizes the absolute element
-        // instead of collapsing it to zero.
-        let card_h = Self::card_height(table.columns.len());
+        let scale = layout.scale;
+        // Every logical dimension × scale. Explicit height keeps it in
+        // lockstep with `card_height` (the same formula the edge layer uses to
+        // estimate card bounds), so edges land exactly on the card edges — and
+        // taffy sizes the absolute element instead of collapsing it to zero.
+        let card_w = CARD_W * scale;
+        let card_h = Self::card_height(table.columns.len()) * scale;
+        let header_h = CARD_HEADER_H * scale;
+        let row_h = CARD_ROW_H * scale;
+        let pad_x = px(8.0 * scale);
+        // Font sizes: the card used Tailwind text classes (rem-based) before;
+        // reproduce their rem ratios explicitly so the canvas zoom still
+        // applies on top of the theme's global font size (rem base).
+        let rem = view.theme().font_size.as_f32();
+        let font_header = px(rem * scale);
+        let font_col = px(rem * 0.875 * scale);
+        let font_ty = px(rem * 0.75 * scale);
+
         let theme = view.theme();
         let id_clone = id.clone();
         let is_selected = self.selection == Selection::Table(id.clone());
 
         let rows = table.columns.iter().map(|col| {
             div()
-                .px_2()
-                .h(px(CARD_ROW_H))
+                .px(pad_x)
+                .h(px(row_h))
                 .flex()
                 .items_center()
                 .justify_between()
-                .child(div().text_sm().child(col.name.clone()))
+                .child(div().text_size(font_col).child(col.name.clone()))
                 .child(
                     div()
-                        .text_xs()
+                        .text_size(font_ty)
                         .text_color(theme.muted_foreground)
                         .child(type_label(&col.ty)),
                 )
@@ -495,12 +543,12 @@ impl ErCanvas {
             .absolute()
             .left(screen.x)
             .top(screen.y)
-            .w(px(CARD_W))
+            .w(px(card_w))
             .h(px(card_h))
             .bg(theme.background)
-            .border_1()
+            .border(px(scale.max(0.5)))
             .border_color(if is_selected { theme.primary } else { theme.border })
-            .rounded_md()
+            .rounded(px(6.0 * scale))
             .overflow_hidden()
             // Selected card: an accent glow (a primary-colored box-shadow with
             // blur) layered over a subtle drop shadow, so the selection reads
@@ -534,12 +582,13 @@ impl ErCanvas {
             )
             .child(
                 div()
-                    .h(px(CARD_HEADER_H))
-                    .px_2()
+                    .h(px(header_h))
+                    .px(pad_x)
                     .flex()
                     .items_center()
                     .bg(theme.primary)
                     .text_color(theme.primary_foreground)
+                    .text_size(font_header)
                     .font_bold()
                     .child(table.name.clone()),
             )
