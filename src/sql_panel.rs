@@ -170,6 +170,7 @@ impl SqlPanel {
         self.doc.update(cx, |doc, cx| {
             if let Some(table) = doc.schema.tables.get_mut(id) {
                 table.name = parsed.name;
+                table.columns = parsed.columns;
                 // Keep CHECK constraints (and any other non-round-tripped kind)
                 // with their existing ids; PK/Unique/FK come back from the parse.
                 let preserved: Vec<Constraint> = table
